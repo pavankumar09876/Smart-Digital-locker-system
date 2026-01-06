@@ -1,6 +1,10 @@
 from twilio.rest import Client
 from app.core.config import settings
-from app.services.notifications import send_email_to_user_after_receiveItem
+from app.services.notifications import notify_item_collected_sender
+from decimal import Decimal
+from email.message import EmailMessage
+from app.services.notifications import _send_email
+
 client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
 
 def send_otp_sms(phone: str, otp: str):
@@ -12,18 +16,9 @@ def send_otp_sms(phone: str, otp: str):
     return message.sid
 
     
-def notify_sender_item_collected(email: str, locker_id: int):
-    if not email:
-        return
-
-    message = f"Your item from locker {locker_id} has been collected successfully."
-
-    send_email_to_user_after_receiveItem(
-        to=email,
-        subject="Item Collected",
-        body=message
-    )
 
 
     # if phone:
     #     send_sms(phone, message)
+
+

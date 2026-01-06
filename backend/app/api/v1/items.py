@@ -1,10 +1,11 @@
-from fastapi import APIRouter,Depends,HTTPException,status
+from fastapi import APIRouter,Depends,HTTPException,status,BackgroundTasks
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
-from fastapi import BackgroundTasks
-
+from datetime import timezone
+from decimal import Decimal, ROUND_UP
+from sqlalchemy.orm import selectinload
 
 from app.schemas.item import ItemResponse,ItemCreate,ItemCollect,ItemOTPRequest
 from app.core.database import get_db
@@ -12,16 +13,22 @@ from app.models.locker import Locker
 from app.models.items import Items
 from app.services.otp import generate_otp
 from app.core.hashing import Hash
-from app.services.notifications import send_otp
 from app.services.otp import verify_otp
-# from app.services.sms import notify_sender_item_collected
-from app.services import sms
-
+from app.models.transcation import Transaction
+from app.services.billing import calculate_bill
+from app.services.notifications import (
+    send_otp,
+    notify_item_added_sender,
+    notify_item_added_receiver,
+    notify_sender_item_collected,
+    notify_receiver_item_collected
+)
 
 router=APIRouter()
 
+
 @router.post('/',response_model=ItemResponse)
-async def add_item(data:ItemCreate, db:AsyncSession=Depends(get_db)):
+async def add_item(data:ItemCreate,background_tasks: BackgroundTasks,db:AsyncSession=Depends(get_db)):
     result= await db.execute(select(Locker).where(Locker.id==data.locker_id))
     locker=result.scalar_one_or_none()
 
@@ -46,10 +53,29 @@ async def add_item(data:ItemCreate, db:AsyncSession=Depends(get_db)):
     locker.status="OCCUPIED"
 
     db.add(new_item)
-    await db.commit()
+    await db.flush()   #get new_item.id
 
+    transaction = Transaction(
+        item_id=new_item.id,
+        locker_id=data.locker_id,
+        rate_per_hour=50
+    )
+
+    db.add(transaction)
+    await db.commit()
     await db.refresh(new_item)
 
+    background_tasks.add_task(
+        notify_item_added_sender,
+        data.your_email,
+        data.locker_id,
+)
+
+    background_tasks.add_task(
+        notify_item_added_receiver,
+        data.receiver_emailid,
+        data.locker_id,
+)
     return new_item
 
 
@@ -59,20 +85,27 @@ async def collect_item(locker_id: int,
                         background_tasks: BackgroundTasks,
                         db: AsyncSession = Depends(get_db)
                         ):
-    item = (
-        await db.execute(
+    result = (
         select(Items)
         .join(Locker)
         .where(
             Locker.id == locker_id,
             Items.status == "OCCUPIED"
             )
-    )).scalar_one_or_none()
+    )
+    item= (await db.execute(result)).scalar_one_or_none()
 
     if not item :
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="No item to collect"
+            detail="No active item found in this locker"
+            )
+
+    #OTP validation
+    if item.otp_expires_at < datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OTP expired"
             )
 
     if not verify_otp(data.otp, item.otp_hash):
@@ -80,41 +113,66 @@ async def collect_item(locker_id: int,
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid OTP"
             )
-
-    if item.otp_expires_at < datetime.utcnow():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OTP expired"
-            )
     
-    sender_email = item.your_email
-    # sender_phone = item.your_phone
-    item_id=item.id
+    # 3. Fetch active transaction
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.item_id == item.id,
+            Transaction.ended_at.is_(None),
+        )
+    )
+    transaction:Transaction|None = result.scalar_one_or_none()
 
-    # ✅ Update item
+    if not transaction:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Transaction not found",
+        )
+
+    end_time = datetime.now(timezone.utc)
+    # BILL CALCULATION (AUTO)
+    total_amount = calculate_bill(item.created_at)
+
+    # Fetch the email before scheduling background task
+    your_email = item.your_email
+    receiver_email = item.receiver_email
+    locker_no = locker_id
+    amount = total_amount
+
+    # Update transaction
+    transaction.ended_at = end_time
+    transaction.total_amount = total_amount
+
+    # Update item
     item.status = "COLLECTED"
-    item.collected_at = func.now()
+    item.collected_at = end_time
 
-    locker = (
-        await db.execute(
-            select(Locker).where(Locker.id == locker_id,)
-            )
-        ).scalar_one()
-
+    locker = await db.get(Locker, locker_id)
     locker.status = "AVAILABLE"
 
-    await db.commit()
+   
 
-      # Background notification (SAFE)
+    await db.commit()
+    
+    # Background notification (SAFE)
     background_tasks.add_task(
-        sms.notify_sender_item_collected,
-        sender_email,
-        locker_id
+        notify_sender_item_collected,
+        your_email,
+        locker_no,
+        amount,
+    )
+
+    background_tasks.add_task(
+        notify_receiver_item_collected,
+        receiver_email,
+        locker_no,
     )
 
     return {
-        "item_id": item_id,
-        "detail": f"Item collected successfully, {locker_id} locker is now available"
+        # "item_id": item.id,
+        # "locker_id": locker_id,
+        # "total_amount": total_amount,
+        "detail": "Item collected successfully and locker is now available",
     }
 
 
@@ -146,10 +204,9 @@ async def request_otp(
             detail="Unauthorized receiver"
             )
 
-    otp, otp_hash,expiry = generate_otp()
+    otp,expiry = generate_otp()
 
     # Store hashed OTP and expiry in the item record
-    item.otp_hash=otp_hash
     item.otp_hash = Hash.hash_value(otp)
     item.otp_expires_at = expiry
     await db.commit()
