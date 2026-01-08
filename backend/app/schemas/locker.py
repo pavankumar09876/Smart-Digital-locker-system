@@ -1,29 +1,42 @@
 from pydantic import BaseModel
 from typing import Optional
+from uuid import UUID
+# from app.schemas.locker import LockerResponse
+
 
 class LockerCreate(BaseModel):
-    location:str
-    
+    locker_point: UUID   # locker_point_id
+
+
 
 class LockerUpdate(BaseModel):
-    location: Optional[str]=None
-    status: Optional[str]=None
+    status: Optional[str] = None
 
 
-class LockerResponse(BaseModel):
-    id:int
-    location:str
-    status:str
 
-    model_config={
-        'from_attributes':True
+class AllLockerResponse(BaseModel):
+    id: UUID
+    name: str
+    status: str
+    locker_point_name: str
+
+    model_config = {
+        "from_attributes": True
     }
 
-from pydantic import BaseModel
+class LockerCreateResponse(BaseModel):
+    id: UUID
+    name: str
+    status: str
+    locker_point_id: UUID
 
-class LockerResponse(BaseModel):
-    id: int
-    location: str
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class LockerMiniResponse(BaseModel):
+    id: UUID
     status: str
 
     model_config = {

@@ -7,7 +7,7 @@ class createuser(BaseModel):
     password:str=Field(min_length=6)
 
 class userResponse(BaseModel):
-    # name:str
+    name:str
     email:EmailStr
 
     model_config={

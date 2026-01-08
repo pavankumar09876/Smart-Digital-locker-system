@@ -1,14 +1,15 @@
 from pydantic import BaseModel,EmailStr
 from typing import Optional
 from datetime import datetime
+from uuid import UUID
 
-
+#  INPUT SCHEMA FOR CREATING AN ITEM
 class ItemCreate(BaseModel):
     name:str
-    locker_id:int
+    locker_id:UUID
     your_email:str
     receiver_phone_number:str
-    receiver_emailid:Optional[EmailStr]=None
+    receiver_emailid:EmailStr
     description:Optional[str]=None
     
 
@@ -28,14 +29,16 @@ class ItemOTPRequest(BaseModel):
         'from_attributes':True
     }
 
+
+#   OUTPUT SCHEMA FOR RESPONSE
 class ItemResponse(BaseModel):
     id: int
     name: Optional[str]
     description: Optional[str]
-    locker_id: int
+    locker_id: UUID
     your_email:str
     receiver_phone: str
-    receiver_email: Optional[EmailStr]
+    receiver_email: EmailStr
     status: str
     created_at: datetime
 
