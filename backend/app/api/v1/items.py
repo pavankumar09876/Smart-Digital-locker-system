@@ -6,6 +6,7 @@ from datetime import datetime
 from datetime import timezone
 from decimal import Decimal, ROUND_UP
 from sqlalchemy.orm import selectinload
+from uuid import UUID
 
 from app.schemas.item import ItemResponse,ItemCreate,ItemCollect,ItemOTPRequest
 from app.core.database import get_db
@@ -16,6 +17,7 @@ from app.core.hashing import Hash
 from app.services.otp import verify_otp
 from app.models.transcation import Transaction
 from app.services.billing import calculate_bill
+from app.core.rate_limiter import rate_limit
 from app.services.notifications import (
     send_otp,
     notify_item_added_sender,
@@ -80,15 +82,22 @@ async def add_item(data:ItemCreate,background_tasks: BackgroundTasks,db:AsyncSes
 
 
 @router.post("/lockers/{locker_id}/collect")
-async def collect_item(locker_id: int, 
+async def collect_item(locker_id: UUID,
                         data:ItemCollect,
                         background_tasks: BackgroundTasks,
                         db: AsyncSession = Depends(get_db)
                         ):
+    
+    limiter_key = f"otp_verify:{locker_id}"
+
+    await rate_limit(
+        key=limiter_key,
+        max_requests=5,          # max 5 attempts
+        window_seconds=300,
+    )
+
     result = (
-        select(Items)
-        .join(Locker)
-        .where(
+        select(Items).join(Locker).where(
             Locker.id == locker_id,
             Items.status == "OCCUPIED"
             )
@@ -102,11 +111,12 @@ async def collect_item(locker_id: int,
             )
 
     #OTP validation
-    if item.otp_expires_at < datetime.utcnow():
+    if not item.otp_expires_at or item.otp_expires_at < datetime.now(timezone.utc):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="OTP expired"
-            )
+        )
+
 
     if not verify_otp(data.otp, item.otp_hash):
         raise HTTPException(
@@ -121,7 +131,7 @@ async def collect_item(locker_id: int,
             Transaction.ended_at.is_(None),
         )
     )
-    transaction:Transaction|None = result.scalar_one_or_none()
+    transaction = result.scalar_one_or_none()
 
     if not transaction:
         raise HTTPException(
@@ -132,20 +142,23 @@ async def collect_item(locker_id: int,
     end_time = datetime.now(timezone.utc)
     # BILL CALCULATION (AUTO)
     total_amount = calculate_bill(item.created_at)
-
-    # Fetch the email before scheduling background task
-    your_email = item.your_email
-    receiver_email = item.receiver_email
-    locker_no = locker_id
-    amount = total_amount
-
-    # Update transaction
+    # Update transaction and item
     transaction.ended_at = end_time
     transaction.total_amount = total_amount
 
     # Update item
     item.status = "COLLECTED"
     item.collected_at = end_time
+    
+    item.otp_hash = None
+    item.otp_expires_at = None
+    item.otp_attempts = 0
+    item_id=item.id
+    # Fetch the email before scheduling background task
+    your_email = item.your_email
+    receiver_email = item.receiver_email
+    locker_no = locker_id
+    amount = total_amount
 
     locker = await db.get(Locker, locker_id)
     locker.status = "AVAILABLE"
@@ -169,19 +182,28 @@ async def collect_item(locker_id: int,
     )
 
     return {
-        # "item_id": item.id,
-        # "locker_id": locker_id,
-        # "total_amount": total_amount,
+        "item_id": item_id,
+        "locker_id": locker_id,
+        "total_amount": total_amount,
         "detail": "Item collected successfully and locker is now available",
     }
 
 
 @router.post("/lockers/{locker_id}/request-otp")
 async def request_otp(
-    locker_id: int, 
-    data: ItemOTPRequest, 
+    locker_id: UUID,
+    data: ItemOTPRequest,
     db: AsyncSession = Depends(get_db)
     ):
+
+    limiter_key = f"otp_request:{data.contact}"
+
+    await rate_limit(
+        key=limiter_key,
+        max_requests=3,
+        window_seconds=300,
+    )
+
     item = (
         await db.execute(
         select(Items)
@@ -209,6 +231,7 @@ async def request_otp(
     # Store hashed OTP and expiry in the item record
     item.otp_hash = Hash.hash_value(otp)
     item.otp_expires_at = expiry
+    item.otp_attempts=0
     await db.commit()
 
     # Send OTP via email or SMS
