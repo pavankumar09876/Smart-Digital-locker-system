@@ -1,0 +1,30 @@
+
+services:
+  backend:
+    build: ./backend
+    container_name: smart_locker_backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:6585@db:5432/kitchen
+    depends_on:
+      - db
+    volumes:
+      - ./backend:/app
+    restart: always
+
+  db:
+    image: postgres:15
+    container_name: smart_locker_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 6585
+      POSTGRES_DB: kitchen
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  postgres_data:

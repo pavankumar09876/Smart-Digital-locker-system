@@ -64,9 +64,10 @@ async def get_all_cities(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(City).options(selectinload(City.locker_points)
-                             .selectinload(LockerPoint.lockers)
-                             )
+        select(City).options(
+            selectinload(City.locker_points)
+            .selectinload(LockerPoint.lockers)
+            )
     )
     return result.scalars().all()
 
