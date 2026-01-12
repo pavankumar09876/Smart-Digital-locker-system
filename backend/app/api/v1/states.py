@@ -12,6 +12,7 @@ from app.models.state import State
 from app.core.security import require_role
 from app.models.auth import Role, User
 from app.models.city import City
+from app.models.locker_point import LockerPoint
 
 router = APIRouter()
 
@@ -45,9 +46,11 @@ async def get_states(db: AsyncSession = Depends(get_db)):
         select(State).options(
             selectinload(State.cities)
             .selectinload(City.locker_points)
+            .selectinload(LockerPoint.lockers)
         )
     )
     return result.scalars().all()
+
 @router.post("/", response_model=StateResponse, status_code=status.HTTP_201_CREATED)
 async def create_state(
     state: StateCreate,
