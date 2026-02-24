@@ -77,8 +77,14 @@ async def create_locker_point(
     db.add(new_locker_point)
     await db.commit()
     await db.refresh(new_locker_point)
-
-    return new_locker_point
+    
+    # Load the lockers relationship for the response
+    result = await db.execute(
+        select(LockerPoint)
+        .options(selectinload(LockerPoint.lockers))
+        .where(LockerPoint.id == new_locker_point.id)
+    )
+    return result.scalar_one()
 
 
 @router.get('/{locker_point_id}', response_model=LockerPointResponse)
@@ -118,8 +124,14 @@ async def update_locker_point(
 
     await db.commit()
     await db.refresh(locker_point)
-
-    return locker_point
+    
+    # Load the lockers relationship for the response
+    result = await db.execute(
+        select(LockerPoint)
+        .options(selectinload(LockerPoint.lockers))
+        .where(LockerPoint.id == locker_point_id)
+    )
+    return result.scalar_one()
 
 @router.delete('/{locker_point_id}')
 async def delete_locker_point(

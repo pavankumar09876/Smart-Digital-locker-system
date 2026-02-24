@@ -2,6 +2,7 @@ from fastapi import APIRouter,Depends,HTTPException,status,BackgroundTasks
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from datetime import timezone
 from decimal import Decimal, ROUND_UP
@@ -55,30 +56,46 @@ async def add_item(data:ItemCreate,background_tasks: BackgroundTasks,db:AsyncSes
     locker.status="OCCUPIED"
 
     db.add(new_item)
-    await db.flush()   #get new_item.id
+    try:
+        await db.flush()   #get new_item.id
 
-    transaction = Transaction(
-        item_id=new_item.id,
-        locker_id=data.locker_id,
-        rate_per_hour=50
-    )
+        transaction = Transaction(
+            item_id=new_item.id,
+            locker_id=data.locker_id,
+            rate_per_hour=50
+        )
 
-    db.add(transaction)
-    await db.commit()
-    await db.refresh(new_item)
+        db.add(transaction)
+        await db.commit()
+        await db.refresh(new_item)
 
-    background_tasks.add_task(
-        notify_item_added_sender,
-        data.your_email,
-        data.locker_id,
-)
+        background_tasks.add_task(
+            notify_item_added_sender,
+            data.your_email,
+            data.locker_id,
+        )
 
-    background_tasks.add_task(
-        notify_item_added_receiver,
-        data.receiver_emailid,
-        data.locker_id,
-)
-    return new_item
+        background_tasks.add_task(
+            notify_item_added_receiver,
+            data.receiver_emailid,
+            data.locker_id,
+        )
+        return new_item
+
+    except IntegrityError as e:
+        await db.rollback()
+        # Check if it's a unique constraint violation for locker_id
+        if "duplicate key value violates unique constraint" in str(e) and "ix_items_locker_id" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Locker {data.locker_id} is already occupied. Please choose a different locker."
+            )
+        else:
+            # Handle other integrity errors
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database integrity error occurred. Please try again."
+            )
 
 
 @router.post("/lockers/{locker_id}/collect")
